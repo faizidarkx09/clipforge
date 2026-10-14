@@ -1,0 +1,15 @@
+# Render Blueprint — one-click deploy of ClipForge (free tier).
+# Alternatively create the Web Service manually in the Render dashboard:
+#   New → Web Service → connect this repo → Runtime: Docker → Plan: Free.
+# Render injects $PORT automatically; the app reads it (falls back to 7860).
+# CLIPFORGE_MODEL=tiny keeps RAM usage inside Render's free-tier limits
+# (users can still pick base/small in the UI if the container allows it).
+services:
+  - type: web
+    name: clipforge
+    env: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: CLIPFORGE_MODEL
+        value: tiny

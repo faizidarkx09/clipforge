@@ -1,0 +1,14 @@
+# Keep the Docker build context small
+__pycache__/
+*.py[cod]
+*.egg-info/
+.git/
+.gitignore
+jobs/
+test_assets/
+*.mp4
+*.mov
+*.webm
+.venv*/
+venv/
+.DS_Store

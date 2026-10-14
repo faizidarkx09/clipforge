@@ -1,0 +1,35 @@
+# ClipForge — pinned, CPU-only, Python 3.10
+# Verified to exist on PyPI. All heavy deps are lazily imported by the
+# backend, so `import app` works with just gradio + numpy installed.
+
+gradio==4.44.1
+# gradio 4.44.1 does `from huggingface_hub import HfFolder`, which was
+# removed in huggingface-hub >= 0.27 — pin to the last version that has it,
+# otherwise a fresh `pip install` pulls hub 1.x and gradio fails to import.
+huggingface-hub==0.26.3
+faster-whisper==1.1.1
+# faster-whisper 1.1.1 calls av.open(..., metadata_errors="ignore"), an option
+# REMOVED in PyAV >= 12 (it crashes with TypeError). Pin av<12 until
+# faster-whisper bumps; PyAV 11.x has wheels for cp310+cp312.
+av<12
+ctranslate2==4.6.0
+onnxruntime==1.20.1
+# 4.x REQUIRED: OpenCV 5.0 removed the Haar cascade XMLs and the backend's
+# reframe.py relies on Haar cascades (with YuNet/center-crop fallbacks).
+opencv-python-headless==4.10.0.84
+yt-dlp==2025.10.14
+# gradio 4.38+ requires numpy>=2.0, so the whole stack is pinned on numpy 2.x.
+numpy==2.0.2
+scipy==1.14.1
+# gradio 4.44.1's HTTP server breaks with modern fastapi/starlette/pydantic
+# (fresh pip pulls fastapi 0.14x + starlette 1.x + pydantic 2.14 → 500 errors
+# on / and /config). Verified working set, contemporary with gradio 4.44.1:
+# - starlette>=0.42 changed the Jinja2 templating call signature
+# - pydantic>=2.11 emits boolean JSON-schemas that gradio-client 1.3.0 chokes on
+fastapi==0.115.6
+starlette==0.41.3
+pydantic==2.10.6
+# AI dub (beta): translation + neural TTS voices. Both are lazily imported
+# inside clipforge/dub.py, so they are NOT needed for `import app`.
+edge-tts
+deep-translator
