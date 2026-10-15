@@ -104,18 +104,81 @@ def clip_label(i: int, clip: dict) -> str:
     )
 
 
+def make_thumb(video_path: str, ts: float, out_path: str, width: int = 360) -> bool:
+    """Extract a JPEG thumbnail at `ts` seconds. Returns True on success."""
+    try:
+        r = subprocess.run(
+            ["ffmpeg", "-y", "-v", "error", "-ss", f"{max(0, ts):.2f}",
+             "-i", video_path, "-vframes", "1",
+             "-vf", f"scale={width}:-1", "-q:v", "4", out_path],
+            capture_output=True, timeout=30)
+        return r.returncode == 0 and os.path.exists(out_path)
+    except Exception:
+        return False
+
+
+def _thumb_b64(path: str) -> str:
+    """File -> base64 data URI (or empty string)."""
+    try:
+        import base64
+        with open(path, "rb") as f:
+            return "data:image/jpeg;base64," + base64.b64encode(f.read()).decode()
+    except Exception:
+        return ""
+
+
 EMPTY_SCORE_CARDS = """
-<div class="cf-empty">
-  <div class="cf-empty-icon">🎬</div>
-  <div><b>Upload a video to begin…</b></div>
-  <div class="cf-empty-sub">No clips yet — run <b>Analyze</b> and your ranked
-  candidates will appear here with viral-score cards.</div>
+<div class="oc-empty">
+  <div class="oc-empty-icon">🎬</div>
+  <div><b>No clips yet</b></div>
+  <div class="oc-empty-sub">Upload a video and hit <b>Generate Clips</b> — your
+  AI-ranked candidates will appear here with virality scores.</div>
+</div>
+"""
+
+SIDEBAR_HTML = """
+<div class="oc-sidebar">
+  <div class="oc-logo">
+    <div class="oc-logo-mark">✂️</div>
+    <div><div class="oc-logo-name">ClipForge</div><div class="oc-logo-sub">AI Clipping Studio</div></div>
+  </div>
+  <div class="oc-nav-label">Studio</div>
+  <a class="oc-nav-item active" href="#"><span class="oc-ico">🎬</span> New Clips</a>
+  <a class="oc-nav-item" href="#"><span class="oc-ico">⚡</span> How it works</a>
+  <div class="oc-nav-label">Account</div>
+  <a class="oc-nav-item" href="#"><span class="oc-ico">⚙️</span> Settings</a>
+  <a class="oc-nav-item" href="#"><span class="oc-ico">❓</span> Help</a>
+  <div class="oc-side-foot">ClipForge v3 · free &amp; open<br>made for creators 🎥</div>
+</div>
+"""
+
+HEADER_HTML = """
+<div class="oc-header">
+  <div class="oc-kicker"><span class="dot"></span> AI clipping engine · online</div>
+  <h1 class="oc-title">Turn long videos into <span class="grad">viral clips</span></h1>
+  <p class="oc-sub">Upload a video or paste a link — AI transcribes, scores every moment for
+  virality, reframes for vertical, and burns in animated captions. Pick your winners, hit render.</p>
+</div>
+"""
+
+HOW_HTML = """
+<div class="oc-panel">
+  <p class="oc-panel-title"><span class="oc-ico">⚡</span> How it works</p>
+  <div style="display:flex;gap:.7rem;flex-wrap:wrap">
+    <div style="flex:1;min-width:150px;background:rgba(255,255,255,.03);border-radius:12px;padding:.8rem">
+      <b>1 · Upload</b><div style="color:var(--oc-muted);font-size:.85rem;margin-top:.25rem">Drop a video file or paste a YouTube URL. Up to ~500 MB.</div></div>
+    <div style="flex:1;min-width:150px;background:rgba(255,255,255,.03);border-radius:12px;padding:.8rem">
+      <b>2 · AI ranks</b><div style="color:var(--oc-muted);font-size:.85rem;margin-top:.25rem">Whisper transcribes, the scorer ranks the most viral moments 0–100.</div></div>
+    <div style="flex:1;min-width:150px;background:rgba(255,255,255,.03);border-radius:12px;padding:.8rem">
+      <b>3 · Render</b><div style="color:var(--oc-muted);font-size:.85rem;margin-top:.25rem">Style the captions, pick 9:16 / 1:1 / 16:9, export pro MP4s.</div></div>
+  </div>
 </div>
 """
 
 
 def score_cards_html(clips) -> str:
-    """Per-clip HTML score cards with animated conic-gradient score rings."""
+    """Opus-style clip cards: thumbnail, virality score ring, duration badge,
+    reason + key quote. Thumbnails are base64 data URIs in clip['_thumb_b64']."""
     if not clips:
         return EMPTY_SCORE_CARDS
     cards = []
@@ -124,25 +187,33 @@ def score_cards_html(clips) -> str:
         ring = "#22c55e" if score >= 70 else ("#f59e0b" if score >= 40 else "#ef4444")
         dur = c.get("duration", 0) or 0
         time_range = f"{fmt_ts(c.get('start', 0))}–{fmt_ts(c.get('end', 0))}"
-        reason = html.escape(str(c.get("reason") or "—")[:180])
-        quote = html.escape(str(c.get("quote") or "—")[:180])
-        delay = min(i * 0.08, 0.6)
+        reason = html.escape(str(c.get("reason") or "—")[:160])
+        quote = html.escape(str(c.get("quote") or "—")[:160])
+        thumb = c.get("_thumb_b64") or ""
+        thumb_html = (f'<img class="oc-thumb" src="{thumb}" alt="clip thumbnail" loading="lazy">'
+                      if thumb else '<div class="oc-thumb oc-thumb-fallback">🎬</div>')
+        delay = min(i * 0.07, 0.5)
         cards.append(
-            f'<div class="cf-card" style="animation-delay:{delay:.2f}s">'
-            f'<div class="cf-ring" style="--score:{score:.0f}; --ring:{ring}">'
-            f"<span>{score:.0f}</span></div>"
-            f'<div class="cf-card-body">'
-            f'<div class="cf-card-title">#{i + 1} · {dur:.1f}s · {time_range}</div>'
-            f'<div class="cf-card-reason">{reason}</div>'
-            f'<div class="cf-card-quote">&ldquo;{quote}&rdquo;</div>'
+            f'<div class="oc-card" style="animation-delay:{delay:.2f}s">'
+            f'<div class="oc-thumb-wrap">{thumb_html}'
+            f'<div class="oc-dur-badge">{dur:.0f}s</div>'
+            f'<div class="oc-score-badge" style="--ring:{ring}">'
+            f'<svg viewBox="0 0 44 44"><circle cx="22" cy="22" r="19" class="oc-track"/>'
+            f'<circle cx="22" cy="22" r="19" class="oc-fill" '
+            f'stroke="{ring}" stroke-dasharray="{score * 1.19:.0f} 119"/></svg>'
+            f'<span>{score:.0f}</span></div></div>'
+            f'<div class="oc-card-body">'
+            f'<div class="oc-card-title">Clip {i + 1} <span class="oc-time">{time_range}</span></div>'
+            f'<div class="oc-card-reason">{reason}</div>'
+            f'<div class="oc-card-quote">&ldquo;{quote}&rdquo;</div>'
             f"</div></div>"
         )
-    return '<div class="cf-cards">' + "".join(cards) + "</div>"
+    return '<div class="oc-cards">' + "".join(cards) + "</div>"
 
 
 def _err(msg: str, job):
     """Error-shaped return tuple for the analyze handler."""
-    return (f"❌ {msg}", "", EMPTY_SCORE_CARDS, [],
+    return (f"❌ {msg}", "", EMPTY_SCORE_CARDS,
             gr.update(choices=[], value=[]), job)
 
 
@@ -227,20 +298,24 @@ def analyze_video(video_file, yt_url, top_n, min_dur, max_dur, model,
     if not clips:
         status = ("⚠️ Transcribed fine, but no clips passed the duration filters. "
                   "Try lowering the minimum duration and analyzing again.")
-        return (status, transcript_text, EMPTY_SCORE_CARDS, [],
+        return (status, transcript_text, EMPTY_SCORE_CARDS,
                 gr.update(choices=[], value=[]), job)
 
-    rows = [
-        [i + 1,
-         f"{c.get('score', 0):.0f}",
-         f"{c.get('duration', 0):.1f}s",
-         f"{fmt_ts(c.get('start', 0))} – {fmt_ts(c.get('end', 0))}",
-         (c.get("reason") or "")[:120],
-         (c.get("quote") or "")[:140]]
-        for i, c in enumerate(clips)
-    ]
     labels = [clip_label(i, c) for i, c in enumerate(clips)]
     job["labels"] = labels  # remember for mapping checkbox picks -> clip index
+
+    # ---- thumbnails for the Opus-style cards --------------------------------
+    thumbdir = os.path.join(workdir, "thumbs")
+    os.makedirs(thumbdir, exist_ok=True)
+    src_video = job.get("video")
+    for i, c in enumerate(clips):
+        try:
+            tp = os.path.join(thumbdir, f"thumb_{i}.jpg")
+            ts = float(c.get("start", 0) or 0) + min(1.0, float(c.get("duration", 0) or 0) / 3)
+            if src_video and make_thumb(src_video, ts, tp):
+                c["_thumb_b64"] = _thumb_b64(tp)
+        except Exception:
+            pass
 
     note = ""
     dur = probe_duration(job["video"])
@@ -252,7 +327,7 @@ def analyze_video(video_file, yt_url, top_n, min_dur, max_dur, model,
     tags = " ".join(job.get("hashtags", []))
     status = (f"✅ Analyzed {len(segments)} transcript segments, ranked {len(clips)} clips. "
               f"Suggested title: **{title}**  {tags}{note}")
-    return (status, transcript_text, score_cards_html(clips), rows,
+    return (status, transcript_text, score_cards_html(clips),
             gr.update(choices=labels, value=labels[:1]), job)
 
 
@@ -365,296 +440,369 @@ def render_selected(selected, job, style, font_size, position, text_color,
 # ---------------------------------------------------------------- UI
 
 CSS = """
-/* ============ ClipForge premium dark theme ============ */
-/* NOTE: Gradio 4.44's theme variables don't cascade into components here,
-   so components are styled directly (all rules verified in-browser). */
+/* ============================================================
+   ClipForge — Opus-style professional dark UI (v3)
+   Original design in the spirit of modern AI clipping apps:
+   deep-black canvas, violet→fuchsia accents, glassy cards,
+   virality score badges, buttery animations, fully responsive.
+   ============================================================ */
+:root {
+  --oc-bg: #08080e;
+  --oc-bg2: #0d0d16;
+  --oc-surface: rgba(255,255,255,.035);
+  --oc-surface2: rgba(255,255,255,.06);
+  --oc-border: rgba(255,255,255,.09);
+  --oc-text: #f2f2f8;
+  --oc-muted: #a7a7c4;
+  --oc-dim: #6e6e8c;
+  --oc-violet: #8b5cf6;
+  --oc-fuchsia: #d946ef;
+  --oc-grad: linear-gradient(135deg, #8b5cf6 0%, #d946ef 100%);
+  --oc-grad-soft: linear-gradient(135deg, rgba(139,92,246,.16), rgba(217,70,239,.16));
+  --oc-radius: 16px;
+  --oc-font: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
 .gradio-container {
-  background: linear-gradient(135deg, #07070f 0%, #101020 60%, #0b0b18 100%) !important;
-  color: #e9e9f5;
+  background: radial-gradient(1200px 600px at 15% -5%, rgba(139,92,246,.10), transparent 60%),
+              radial-gradient(1000px 500px at 90% 0%, rgba(217,70,239,.07), transparent 60%),
+              var(--oc-bg) !important;
+  color: var(--oc-text);
+  font-family: var(--oc-font) !important;
   max-width: 100% !important;
+  padding: 0 !important;
 }
-/* ---- row/column form wrappers (Gradio paints these light gray) ---- */
-.gradio-container .form,
-.gradio-container .styler {
-  background: transparent !important;
-  border: none !important;
-  box-shadow: none !important;
+.gradio-container * { font-family: var(--oc-font); }
+
+/* ---------- layout: sidebar + main ---------- */
+.oc-app { display: flex; min-height: 100vh; }
+.oc-sidebar {
+  width: 248px; min-width: 248px; max-width: 248px;
+  background: linear-gradient(180deg, #0c0c15 0%, #0a0a12 100%);
+  border-right: 1px solid var(--oc-border);
+  padding: 1.4rem 1rem;
+  display: flex; flex-direction: column; gap: .4rem;
+  position: sticky; top: 0; height: 100vh;
+  animation: slideInLeft .5s cubic-bezier(.22,1,.36,1) both;
 }
-/* ---- dark component blocks ---- */
+@keyframes slideInLeft { from { opacity: 0; transform: translateX(-24px); } to { opacity: 1; transform: none; } }
+.oc-logo { display: flex; align-items: center; gap: .65rem; padding: .4rem .6rem 1.2rem; }
+.oc-logo-mark {
+  width: 38px; height: 38px; border-radius: 12px; background: var(--oc-grad);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1.25rem; box-shadow: 0 4px 18px rgba(139,92,246,.45);
+}
+.oc-logo-name { font-weight: 800; font-size: 1.15rem; letter-spacing: -.01em; }
+.oc-logo-sub { font-size: .68rem; color: var(--oc-dim); font-weight: 600; letter-spacing: .12em; text-transform: uppercase; }
+.oc-nav-label { font-size: .68rem; font-weight: 700; letter-spacing: .14em; text-transform: uppercase;
+  color: var(--oc-dim); padding: .9rem .7rem .35rem; }
+.oc-nav-item {
+  display: flex; align-items: center; gap: .7rem;
+  padding: .68rem .8rem; border-radius: 12px; color: var(--oc-muted);
+  font-weight: 600; font-size: .92rem; cursor: pointer; border: 1px solid transparent;
+  transition: all .18s ease; text-decoration: none;
+}
+.oc-nav-item:hover { background: var(--oc-surface2); color: var(--oc-text); transform: translateX(2px); }
+.oc-nav-item.active { background: var(--oc-grad-soft); color: #fff; border-color: rgba(139,92,246,.35); }
+.oc-nav-item .oc-ico { font-size: 1.1rem; width: 1.5rem; text-align: center; }
+.oc-side-foot { margin-top: auto; padding: .8rem .6rem .2rem; border-top: 1px solid var(--oc-border);
+  font-size: .75rem; color: var(--oc-dim); }
+.oc-main { flex: 1; min-width: 0; padding: 1.6rem 2rem 3rem; max-width: 1180px;
+  animation: fadeUp .55s ease both; }
+@keyframes fadeUp { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
+
+/* ---------- header ---------- */
+.oc-header { margin-bottom: 1.4rem; }
+.oc-kicker { display: inline-flex; align-items: center; gap: .45rem; font-size: .75rem; font-weight: 700;
+  letter-spacing: .12em; text-transform: uppercase; color: #c4b5fd;
+  background: rgba(139,92,246,.12); border: 1px solid rgba(139,92,246,.3);
+  padding: .35rem .8rem; border-radius: 999px; margin-bottom: .8rem; }
+.oc-kicker .dot { width: 7px; height: 7px; border-radius: 50%; background: #a78bfa;
+  box-shadow: 0 0 10px #a78bfa; animation: blink 2s ease infinite; }
+@keyframes blink { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+.oc-title { font-size: clamp(1.7rem, 4vw, 2.5rem); font-weight: 800; letter-spacing: -.025em;
+  margin: 0 0 .4rem; }
+.oc-title .grad { color: #c4b5fd; }
+@supports ((-webkit-background-clip: text) or (background-clip: text)) {
+  .oc-title .grad {
+    background: var(--oc-grad); -webkit-background-clip: text; background-clip: text;
+    color: transparent; -webkit-text-fill-color: transparent;
+  }
+}
+.oc-sub { color: var(--oc-muted); font-size: 1rem; margin: 0; max-width: 640px; line-height: 1.55; }
+
+/* ---------- panels ---------- */
+.oc-panel {
+  background: var(--oc-surface); border: 1px solid var(--oc-border);
+  border-radius: var(--oc-radius); padding: 1.25rem 1.35rem; margin-bottom: 1.1rem;
+  backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+  animation: fadeUp .5s ease both;
+  transition: border-color .2s ease, box-shadow .2s ease, transform .2s ease;
+}
+.oc-panel:hover { border-color: rgba(139,92,246,.28); box-shadow: 0 8px 30px rgba(0,0,0,.35); }
+.oc-panel-title { font-size: .95rem; font-weight: 700; margin: 0 0 .9rem; display: flex;
+  align-items: center; gap: .55rem; }
+.oc-panel-title .oc-ico { width: 30px; height: 30px; border-radius: 9px; background: var(--oc-grad-soft);
+  border: 1px solid rgba(139,92,246,.3); display: inline-flex; align-items: center;
+  justify-content: center; font-size: 1rem; }
+
+/* ---------- Gradio component reskin ---------- */
 .gradio-container .block {
-  background: rgba(255,255,255,.045) !important;
-  border: 1px solid rgba(255,255,255,.10) !important;
-  border-radius: 16px !important;
-  box-shadow: none !important;
+  background: var(--oc-surface) !important; border: 1px solid var(--oc-border) !important;
+  border-radius: var(--oc-radius) !important; box-shadow: none !important;
 }
+.gradio-container .form, .gradio-container .styler {
+  background: transparent !important; border: none !important; box-shadow: none !important; }
 .gradio-container [data-testid="block-label"] {
-  background: rgba(255,255,255,.05) !important;
-  color: #cfcfe8 !important;
-  border: none !important;
-}
+  background: rgba(255,255,255,.05) !important; color: var(--oc-muted) !important; border: none !important; }
 .gradio-container .block label {
-  background: rgba(255,255,255,.05) !important;
-  border: 1px solid rgba(255,255,255,.12) !important;
-  color: #d6d6e8 !important;
-}
-/* ---- dark inputs ---- */
+  background: rgba(255,255,255,.05) !important; border: 1px solid var(--oc-border) !important;
+  color: #d9d9ec !important; }
 .gradio-container textarea,
 .gradio-container input:not([type="range"]):not([type="checkbox"]):not([type="radio"]):not([type="file"]):not([type="color"]),
 .gradio-container select {
-  background: rgba(255,255,255,.06) !important;
-  color: #f0f0fa !important;
-  border: 1px solid rgba(255,255,255,.14) !important;
-  border-radius: 12px !important;
+  background: rgba(255,255,255,.05) !important; color: var(--oc-text) !important;
+  border: 1px solid var(--oc-border) !important; border-radius: 12px !important;
+  transition: border-color .18s ease, box-shadow .18s ease;
 }
-.gradio-container textarea::placeholder,
-.gradio-container input::placeholder { color: #6d6d8f !important; }
-/* ---- dropdown + video dropzone internals ---- */
-.gradio-container .block .wrap,
-.gradio-container .block .wrap-inner {
-  background: transparent !important;
-  border: none !important;
-  box-shadow: none !important;
-}
+.gradio-container textarea:focus, .gradio-container input:focus, .gradio-container select:focus {
+  border-color: rgba(139,92,246,.6) !important; box-shadow: 0 0 0 3px rgba(139,92,246,.18) !important;
+  outline: none !important; }
+.gradio-container textarea::placeholder, .gradio-container input::placeholder { color: var(--oc-dim) !important; }
+.gradio-container .block .wrap, .gradio-container .block .wrap-inner {
+  background: transparent !important; border: none !important; box-shadow: none !important; }
 .gradio-container .upload-container {
-  background: rgba(255,255,255,.03) !important;
-  border: 1px dashed rgba(255,255,255,.18) !important;
-  border-radius: 14px !important;
-}
-/* ---- dataframe ---- */
-.gradio-container table { color: #e9e9f5 !important; }
-.gradio-container th {
-  background: rgba(124,58,237,.18) !important;
-  color: #f2f2fa !important;
-  border-color: rgba(255,255,255,.10) !important;
-}
-.gradio-container td { border-color: rgba(255,255,255,.08) !important; }
-.gradio-container tr:nth-child(even) td { background: rgba(255,255,255,.03) !important; }
-.gradio-container > * { animation: fadeUp .55s ease both; }
-.gradio-container > *:nth-child(2) { animation-delay: .07s; }
-.gradio-container > *:nth-child(3) { animation-delay: .14s; }
-.gradio-container > *:nth-child(4) { animation-delay: .21s; }
-.gradio-container > *:nth-child(5) { animation-delay: .28s; }
-.gradio-container > *:nth-child(6) { animation-delay: .35s; }
-@keyframes fadeUp {
-  from { opacity: 0; transform: translateY(16px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-.gradio-container h1, .gradio-container h2, .gradio-container h3 { color: #f2f2fa !important; }
-.gradio-container label, .gradio-container legend { color: #cfcfe8 !important; }
+  background: rgba(139,92,246,.05) !important;
+  border: 1.5px dashed rgba(139,92,246,.4) !important; border-radius: var(--oc-radius) !important;
+  transition: all .2s ease; }
+.gradio-container .upload-container:hover {
+  background: rgba(139,92,246,.10) !important; border-color: rgba(139,92,246,.75) !important;
+  box-shadow: 0 0 24px rgba(139,92,246,.15); }
+.gradio-container table { color: var(--oc-text) !important; }
+.gradio-container th { background: rgba(139,92,246,.16) !important; color: #fff !important;
+  border-color: var(--oc-border) !important; }
+.gradio-container td { border-color: var(--oc-border) !important; }
+.gradio-container tr:nth-child(even) td { background: rgba(255,255,255,.025) !important; }
+.gradio-container h1, .gradio-container h2, .gradio-container h3 { color: var(--oc-text) !important; }
+.gradio-container label, .gradio-container legend { color: var(--oc-muted) !important; }
 
-/* ---- animated gradient hero ---- */
-.cf-hero { text-align: center; padding: 2rem 1rem 1rem; }
-.cf-hero-title {
-  font-size: clamp(2.2rem, 6vw, 3.6rem);
-  font-weight: 900; letter-spacing: -0.02em; margin: 0;
-  background: linear-gradient(120deg, #a78bfa, #ec4899, #fbbf24, #a78bfa);
-  background-size: 300% 300%;
-  -webkit-background-clip: text; background-clip: text; color: transparent;
-  animation: heroShift 9s ease infinite;
-}
-@keyframes heroShift {
-  0%, 100% { background-position: 0% 50%; }
-  50%      { background-position: 100% 50%; }
-}
-.cf-hero-tag { color: #b9b9d6; margin-top: .45rem; font-size: 1.02rem; }
-
-/* ---- 3-step indicator ---- */
-.cf-steps { display: flex; align-items: center; justify-content: center;
-  gap: .6rem; flex-wrap: wrap; margin: .4rem 0 1.2rem; }
-.cf-step { display: flex; align-items: center; gap: .5rem; padding: .5rem 1.1rem;
-  border-radius: 999px; background: rgba(255,255,255,.04);
-  border: 1px solid rgba(255,255,255,.12); color: #9a9ab8; font-weight: 600; }
-.cf-step.active { background: linear-gradient(90deg, #7c3aed, #ec4899); color: #fff;
-  border-color: transparent; box-shadow: 0 0 18px rgba(124,58,237,.5); }
-.cf-step-num { display: inline-flex; width: 1.6rem; height: 1.6rem; border-radius: 50%;
-  align-items: center; justify-content: center; background: rgba(255,255,255,.12); font-size: .85rem; }
-.cf-step.active .cf-step-num { background: rgba(255,255,255,.25); }
-.cf-step-line { width: 2.5rem; height: 2px; border-radius: 2px;
-  background: linear-gradient(90deg, rgba(124,58,237,.6), rgba(236,72,153,.6)); }
-
-/* ---- glassmorphism ---- */
-.glass, .cf-card {
-  background: rgba(255,255,255,.04) !important;
-  border: 1px solid rgba(255,255,255,.10) !important;
-  border-radius: 18px !important;
-  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
-}
-.glass { padding: 1rem 1.2rem; margin-bottom: .9rem;
-  transition: transform .18s ease, box-shadow .18s ease; }
-.glass:hover { transform: translateY(-2px); box-shadow: 0 12px 32px rgba(0,0,0,.35); }
-
-/* ---- score cards ---- */
-.cf-cards { display: flex; flex-direction: column; gap: .7rem; margin-bottom: .8rem; }
-.cf-card { display: flex; gap: 1rem; align-items: center; padding: .9rem 1.1rem;
-  animation: fadeUp .5s ease both; transition: transform .18s ease, box-shadow .18s ease; }
-.cf-card:hover { transform: translateY(-2px); box-shadow: 0 10px 28px rgba(0,0,0,.4); }
-.cf-ring {
-  --score: 0; --ring: #22c55e;
-  width: 76px; height: 76px; min-width: 76px; border-radius: 50%;
-  display: flex; align-items: center; justify-content: center; position: relative;
-  background: conic-gradient(var(--ring) calc(var(--score) * 1%), rgba(255,255,255,.08) 0);
-  animation: ringIn .55s cubic-bezier(.34,1.56,.64,1) both;
-}
-.cf-ring::before { content: ''; position: absolute; inset: 9px; border-radius: 50%; background: #12121f; }
-.cf-ring span { position: relative; font-weight: 800; font-size: 1.35rem; color: #fff; }
-@keyframes ringIn { from { transform: scale(.5); opacity: 0; } to { transform: scale(1); opacity: 1; } }
-.cf-card-body { min-width: 0; }
-.cf-card-title { font-weight: 700; color: #fff; }
-.cf-card-reason { color: #c9c9e2; font-size: .92rem; margin-top: .15rem; }
-.cf-card-quote { color: #8f8fb0; font-style: italic; font-size: .9rem; margin-top: .15rem; }
-
-/* ---- empty state ---- */
-.cf-empty { text-align: center; padding: 2.4rem 1rem; color: #8f8fb0;
-  background: rgba(255,255,255,.03); border: 1px dashed rgba(255,255,255,.15); border-radius: 18px; }
-.cf-empty-icon { font-size: 2.4rem; margin-bottom: .5rem; }
-.cf-empty-sub { margin-top: .3rem; font-size: .9rem; }
-
-/* ---- custom sliders ---- */
-input[type="range"] { -webkit-appearance: none; appearance: none; height: 8px;
-  border-radius: 99px; background: linear-gradient(90deg, #7c3aed, #ec4899) !important; outline: none; }
-input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 20px; height: 20px;
-  border-radius: 50%; border: none; cursor: pointer;
-  background: radial-gradient(circle at 30% 30%, #ffffff, #c4b5fd 55%, #7c3aed);
-  box-shadow: 0 0 14px rgba(167,139,250,.9); }
-input[type="range"]::-moz-range-thumb { width: 20px; height: 20px; border-radius: 50%;
-  border: none; cursor: pointer;
-  background: radial-gradient(circle at 30% 30%, #ffffff, #c4b5fd 55%, #7c3aed);
-  box-shadow: 0 0 14px rgba(167,139,250,.9); }
-
-/* ---- primary buttons: pulsing glow + hover lift ---- */
-/* Gradio 4.44 renders variant as a bare `primary` class (class="{size} {variant}"). */
-.gradio-container button { border-radius: 14px !important; transition: transform .18s ease, box-shadow .18s ease; }
+/* ---------- buttons ---------- */
+.gradio-container button { border-radius: 13px !important; font-weight: 700 !important;
+  transition: transform .16s ease, box-shadow .16s ease, filter .16s ease !important; }
 .gradio-container button.primary {
-  background: linear-gradient(90deg, #7c3aed, #ec4899) !important;
-  color: #ffffff !important;
-  animation: pulseGlow 2.6s ease-in-out infinite; border: none !important; }
-.gradio-container button.primary:hover { transform: translateY(-2px); }
-@keyframes pulseGlow {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(124,58,237,.55); }
-  50%      { box-shadow: 0 0 24px 6px rgba(124,58,237,.55); }
+  background: var(--oc-grad) !important; color: #fff !important; border: none !important;
+  box-shadow: 0 6px 24px rgba(139,92,246,.4); animation: ctaGlow 2.8s ease-in-out infinite; }
+.gradio-container button.primary:hover { transform: translateY(-2px) scale(1.01);
+  box-shadow: 0 10px 32px rgba(139,92,246,.55); filter: brightness(1.08); }
+.gradio-container button.primary:active { transform: translateY(0) scale(.99); }
+@keyframes ctaGlow {
+  0%,100% { box-shadow: 0 6px 24px rgba(139,92,246,.35); }
+  50% { box-shadow: 0 6px 34px rgba(217,70,239,.5); } }
+.gradio-container button:not(.primary) {
+  background: var(--oc-surface2) !important; color: var(--oc-text) !important;
+  border: 1px solid var(--oc-border) !important; }
+.gradio-container button:not(.primary):hover { border-color: rgba(139,92,246,.5) !important;
+  transform: translateY(-1px); }
+
+/* ---------- sliders ---------- */
+input[type="range"] { -webkit-appearance: none; appearance: none; height: 7px; border-radius: 99px;
+  background: linear-gradient(90deg, var(--oc-violet), var(--oc-fuchsia)) !important; outline: none; }
+input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; width: 19px; height: 19px;
+  border-radius: 50%; border: none; cursor: pointer;
+  background: radial-gradient(circle at 30% 30%, #fff, #c4b5fd 55%, #8b5cf6);
+  box-shadow: 0 0 12px rgba(139,92,246,.9); transition: transform .15s ease; }
+input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.15); }
+input[type="range"]::-moz-range-thumb { width: 19px; height: 19px; border-radius: 50%; border: none;
+  cursor: pointer; background: radial-gradient(circle at 30% 30%, #fff, #c4b5fd 55%, #8b5cf6);
+  box-shadow: 0 0 12px rgba(139,92,246,.9); }
+
+/* ---------- Opus-style clip cards ---------- */
+.oc-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 1rem; margin-bottom: 1rem; }
+.oc-card {
+  background: linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.02));
+  border: 1px solid var(--oc-border); border-radius: var(--oc-radius); overflow: hidden;
+  animation: cardIn .5s cubic-bezier(.22,1,.36,1) both;
+  transition: transform .2s ease, box-shadow .2s ease, border-color .2s ease; cursor: default; }
+@keyframes cardIn { from { opacity: 0; transform: translateY(18px) scale(.98); } to { opacity: 1; transform: none; } }
+.oc-card:hover { transform: translateY(-4px); border-color: rgba(139,92,246,.45);
+  box-shadow: 0 16px 40px rgba(0,0,0,.5), 0 0 0 1px rgba(139,92,246,.25); }
+.oc-thumb-wrap { position: relative; aspect-ratio: 16/9; background: #101018; overflow: hidden; }
+.oc-thumb { width: 100%; height: 100%; object-fit: cover; display: block;
+  transition: transform .35s ease; }
+.oc-card:hover .oc-thumb { transform: scale(1.05); }
+.oc-thumb-fallback { display: flex; align-items: center; justify-content: center;
+  font-size: 2.2rem; width: 100%; height: 100%; }
+.oc-dur-badge { position: absolute; right: .6rem; bottom: .6rem; background: rgba(0,0,0,.72);
+  color: #fff; font-size: .72rem; font-weight: 700; padding: .22rem .55rem; border-radius: 8px;
+  backdrop-filter: blur(6px); }
+.oc-score-badge { position: absolute; left: .6rem; top: .6rem; width: 52px; height: 52px; }
+.oc-score-badge svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+.oc-score-badge .oc-track { fill: rgba(8,8,14,.78); stroke: rgba(255,255,255,.14); stroke-width: 4.5; }
+.oc-score-badge .oc-fill { fill: none; stroke-width: 4.5; stroke-linecap: round;
+  filter: drop-shadow(0 0 6px currentColor); }
+.oc-score-badge span { position: absolute; inset: 0; display: flex; align-items: center;
+  justify-content: center; font-weight: 800; font-size: .95rem; color: #fff; text-shadow: 0 1px 6px #000; }
+.oc-card-body { padding: .9rem 1rem 1rem; }
+.oc-card-title { font-weight: 700; font-size: .95rem; color: #fff; margin-bottom: .35rem;
+  display: flex; justify-content: space-between; align-items: baseline; gap: .5rem; }
+.oc-time { font-size: .75rem; color: var(--oc-dim); font-weight: 600; white-space: nowrap; }
+.oc-card-reason { color: #c9c9e4; font-size: .85rem; line-height: 1.45; margin-bottom: .3rem; }
+.oc-card-quote { color: var(--oc-dim); font-style: italic; font-size: .82rem; line-height: 1.4;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+/* ---------- empty state ---------- */
+.oc-empty { text-align: center; padding: 3rem 1.2rem; color: var(--oc-dim);
+  background: var(--oc-surface); border: 1.5px dashed rgba(139,92,246,.3);
+  border-radius: var(--oc-radius); }
+.oc-empty-icon { font-size: 2.6rem; margin-bottom: .7rem; animation: float 3s ease-in-out infinite; }
+@keyframes float { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
+.oc-empty b { color: var(--oc-text); font-size: 1.05rem; }
+.oc-empty-sub { margin-top: .4rem; font-size: .88rem; max-width: 420px; margin-inline: auto; line-height: 1.5; }
+
+/* ---------- status pills ---------- */
+.oc-status { border-radius: 12px !important; }
+.oc-status textarea { font-size: .88rem !important; line-height: 1.55 !important; }
+
+/* ---------- transcript ---------- */
+.transcript-box textarea { font-family: ui-monospace, SFMono-Regular, monospace !important;
+  font-size: .82rem !important; line-height: 1.7 !important; }
+
+/* ---------- checkbox group (clip picker) ---------- */
+.oc-picker label { background: var(--oc-surface) !important; border: 1px solid var(--oc-border) !important;
+  border-radius: 12px !important; padding: .6rem .9rem !important; margin: .3rem !important;
+  transition: all .16s ease !important; font-size: .85rem !important; }
+.oc-picker label:hover { border-color: rgba(139,92,246,.5) !important; transform: translateY(-1px); }
+.oc-picker label:has(input:checked) { background: var(--oc-grad-soft) !important;
+  border-color: rgba(139,92,246,.6) !important; box-shadow: 0 0 16px rgba(139,92,246,.2); }
+
+/* ---------- caption style radio cards ---------- */
+.oc-styles .wrap { gap: .5rem !important; }
+.oc-styles label { border-radius: 12px !important; text-transform: capitalize; font-weight: 600 !important; }
+
+/* sidebar wrapper: let .oc-sidebar be the flex item */
+.oc-app > div:first-child { display: contents; }
+/* accordions */
+.oc-acc .label-wrap { font-weight: 700 !important; }
+
+/* ---------- responsive ---------- */
+@media (max-width: 900px) {
+  .oc-app { flex-direction: column; }
+  .oc-sidebar { width: 100%; min-width: 0; max-width: none; height: auto; position: static;
+    flex-direction: row; align-items: center; padding: .7rem .9rem; gap: .5rem;
+    border-right: none; border-bottom: 1px solid var(--oc-border); overflow-x: auto; }
+  .oc-logo { padding: 0 .4rem 0 0; }
+  .oc-logo-sub, .oc-nav-label, .oc-side-foot, .cf-step-line { display: none; }
+  .oc-nav-item { padding: .5rem .7rem; font-size: .82rem; white-space: nowrap; }
+  .oc-main { padding: 1.1rem .9rem 2.5rem; }
+  .oc-cards { grid-template-columns: 1fr; }
+}
+@media (max-width: 520px) {
+  .oc-title { font-size: 1.55rem; }
+  .oc-panel { padding: 1rem .95rem; }
+  .gradio-container button { font-size: .92rem !important; }
 }
 
-/* ---- pill tabs ---- */
-.tab-nav { border-bottom: none !important; gap: .5rem; display: flex; flex-wrap: wrap; }
-.tab-nav button { border-radius: 999px !important; border: 1px solid rgba(255,255,255,.12) !important;
-  background: rgba(255,255,255,.04) !important; color: #b9b9d6 !important;
-  padding: .55rem 1.2rem !important; font-weight: 600; }
-.tab-nav button.selected, .tab-nav button[aria-selected="true"] {
-  background: linear-gradient(90deg, #7c3aed, #ec4899) !important; color: #fff !important;
-  border-color: transparent !important; box-shadow: 0 4px 18px rgba(124,58,237,.45); }
-
-/* (dark inputs are handled by the direct rules above) */
-.transcript-box textarea { font-family: ui-monospace, monospace; font-size: 0.85rem; }
 """
 
-HERO_HTML = """
-<div class="cf-hero">
-  <p class="cf-hero-title">✂️ ClipForge</p>
-  <div class="cf-hero-tag">Long video in → viral shorts out. AI transcription, virality scoring,
-  face-aware reframe, karaoke captions.</div>
-</div>
-"""
 
-STEPS_HTML = """
-<div class="cf-steps">
-  <div class="cf-step active"><span class="cf-step-num">1</span> Upload</div>
-  <div class="cf-step-line"></div>
-  <div class="cf-step"><span class="cf-step-num">2</span> Analyze &amp; Rank</div>
-  <div class="cf-step-line"></div>
-  <div class="cf-step"><span class="cf-step-num">3</span> Customize &amp; Render</div>
-</div>
-"""
 
 with gr.Blocks(title="ClipForge — Long Video → Viral Shorts", css=CSS) as demo:
-    gr.HTML(HERO_HTML)
-    gr.HTML(STEPS_HTML)
-
     job_state = gr.State(None)
 
-    with gr.Tab("📤 1 · Upload & Analyze"):
-        with gr.Row():
-            with gr.Column(scale=1):
-                with gr.Group(elem_classes=["glass"]):
-                    gr.Markdown("### 📥 Source")
-                    video_in = gr.Video(
-                        label=f"Upload video (MP4/MOV/WebM…, max ~{MAX_UPLOAD_MB} MB)",
-                        sources=["upload"])
-                    yt_in = gr.Textbox(label="…or paste a YouTube URL",
-                                       placeholder="https://www.youtube.com/watch?v=…")
-            with gr.Column(scale=1):
-                with gr.Group(elem_classes=["glass"]):
-                    gr.Markdown("### ⚙️ Analysis options")
-                    top_n = gr.Slider(1, 10, value=5, step=1, label="Number of clips to rank")
-                    gr.Markdown("### ⏱️ Clip length")
-                    dur_preset = gr.Radio(
-                        list(DUR_PRESETS.keys()), value=None,
-                        label="Duration preset (sets the sliders below)")
-                    with gr.Row():
-                        min_dur = gr.Slider(5, 60, value=20, step=1, label="Min clip duration (s)")
-                        max_dur = gr.Slider(10, 120, value=70, step=1, label="Max clip duration (s)")
-                    model = gr.Dropdown(["tiny", "base", "small"],
-                                        value=os.environ.get("CLIPFORGE_MODEL", "base"),
-                                        label="Whisper model (tiny = fastest, small = most accurate)")
-                    focus_prompt = gr.Textbox(
-                        label="🎯 Focus prompt (ClipAnything)",
-                        placeholder="e.g. money mindset, crypto tips — boosts matching moments")
-                    with gr.Row():
-                        trim_chk = gr.Checkbox(
-                            value=False, label="✂️ Remove filler words & silences (AI Trim)")
-                        dub_chk = gr.Checkbox(
-                            value=False, label="🎙️ AI Dub (beta)")
-                    dub_lang = gr.Dropdown(
-                        choices=DUB_LANGS, value="urdu", label="Dub language (beta)")
-        analyze_btn = gr.Button("🔍 Analyze", variant="primary", size="lg")
-        status_out = gr.Textbox(label="Status", lines=3, interactive=False)
+    with gr.Row(elem_classes=["oc-app"]):
+        gr.HTML(SIDEBAR_HTML)
 
-    with gr.Tab("🏆 2 · Ranked Clips"):
-        with gr.Row():
-            with gr.Column(scale=1):
-                gr.Markdown("### 📝 Transcript")
-                transcript_out = gr.Textbox(label="Timed segments", lines=22,
+        with gr.Column(elem_classes=["oc-main"]):
+            gr.HTML(HEADER_HTML)
+
+            # ---- 1 · Source ------------------------------------------------
+            gr.HTML('<div class="oc-panel"><p class="oc-panel-title">'
+                    '<span class="oc-ico">📥</span> Source video</p>')
+            with gr.Row():
+                video_in = gr.Video(
+                    label=f"Upload video (MP4/MOV/WebM…, max ~{MAX_UPLOAD_MB} MB)",
+                    sources=["upload"])
+                yt_in = gr.Textbox(label="…or paste a YouTube URL",
+                                   placeholder="https://www.youtube.com/watch?v=…",
+                                   lines=2)
+            gr.HTML('</div>')
+
+            # ---- options ---------------------------------------------------
+            with gr.Accordion("⚙️ Analysis options", open=False, elem_classes=["oc-acc"]):
+                with gr.Row():
+                    top_n = gr.Slider(1, 10, value=5, step=1, label="Clips to rank")
+                    model = gr.Dropdown(
+                        ["tiny", "base", "small"],
+                        value=os.environ.get("CLIPFORGE_MODEL", "base"),
+                        label="Whisper model (tiny = fastest)")
+                gr.Markdown("**⏱️ Clip length**")
+                dur_preset = gr.Radio(
+                    list(DUR_PRESETS.keys()), value=None,
+                    label="Duration preset (sets the sliders)")
+                with gr.Row():
+                    min_dur = gr.Slider(5, 60, value=20, step=1, label="Min (s)")
+                    max_dur = gr.Slider(10, 120, value=70, step=1, label="Max (s)")
+                focus_prompt = gr.Textbox(
+                    label="🎯 Focus prompt (ClipAnything)",
+                    placeholder="e.g. money mindset, crypto tips — boosts matching moments")
+                with gr.Row():
+                    trim_chk = gr.Checkbox(value=False, label="✂️ AI Trim: fillers & silences")
+                    dub_chk = gr.Checkbox(value=False, label="🎙️ AI Dub")
+                dub_lang = gr.Dropdown(choices=DUB_LANGS, value="urdu", label="Dub language")
+
+            analyze_btn = gr.Button("⚡ Generate Clips", variant="primary", size="lg")
+            status_out = gr.Textbox(label="Status", lines=2, interactive=False,
+                                    elem_classes=["oc-status"])
+
+            # ---- 2 · Ranked clips ------------------------------------------
+            gr.HTML('<div class="oc-panel" style="margin-top:1.2rem"><p class="oc-panel-title">'
+                    '<span class="oc-ico">🏆</span> Ranked clips '
+                    '<span style="color:var(--oc-dim);font-weight:500;font-size:.82rem">'
+                    '— virality score 0–100</span></p>')
+            score_cards = gr.HTML(EMPTY_SCORE_CARDS)
+            pick = gr.CheckboxGroup(label="✅ Tick clips to render",
+                                    choices=[], elem_classes=["oc-picker"])
+            gr.HTML('</div>')
+
+            with gr.Accordion("📝 Transcript (timed segments)", open=False, elem_classes=["oc-acc"]):
+                transcript_out = gr.Textbox(label="Transcript", lines=18,
                                             interactive=False, elem_classes=["transcript-box"],
-                                            max_lines=22)
-            with gr.Column(scale=2):
-                gr.Markdown("### 🏆 Ranked clips")
-                score_cards = gr.HTML(EMPTY_SCORE_CARDS)
-                clips_table = gr.Dataframe(
-                    headers=["#", "Score", "Duration", "Time range", "Why it scores", "Key quote"],
-                    datatype=["number", "str", "str", "str", "str", "str"],
-                    interactive=False, wrap=True, label="Candidates")
-                pick = gr.CheckboxGroup(label="✅ Select clips to render", choices=[])
+                                            max_lines=18)
 
-    with gr.Tab("🎨 3 · Customize & Render"):
-        with gr.Group(elem_classes=["glass"]):
-            gr.Markdown("### ✍️ Captions")
-            style = gr.Radio(STYLE_CHOICES, value=STYLE_DEFAULT, label="Caption style")
+            # ---- 3 · Customize & render ------------------------------------
+            gr.HTML('<div class="oc-panel"><p class="oc-panel-title">'
+                    '<span class="oc-ico">🎨</span> Style &amp; export</p>')
+            gr.Markdown("**✍️ Caption style**")
+            style = gr.Radio(STYLE_CHOICES, value=STYLE_DEFAULT, label="Style",
+                             elem_classes=["oc-styles"])
             with gr.Row():
-                font_size = gr.Slider(40, 130, step=2, value=76, label="🔠 Caption size")
-                position = gr.Radio(["Bottom", "Center", "Top"], value="Bottom",
-                                    label="Caption position")
+                font_size = gr.Slider(40, 130, step=2, value=76, label="🔠 Size")
+                position = gr.Radio(["Bottom", "Center", "Top"], value="Bottom", label="Position")
             with gr.Row():
-                text_color = gr.ColorPicker(value="#FFFFFF", label="🔤 Text color")
-                highlight = gr.ColorPicker(value="#FFFF00",
-                                           label="✨ Highlight color (sung words)")
-                accent = gr.ColorPicker(value="#FFD700",
-                                        label="🎨 Accent color (auto-sets highlight)")
+                text_color = gr.ColorPicker(value="#FFFFFF", label="🔤 Text")
+                highlight = gr.ColorPicker(value="#FFFF00", label="✨ Highlight")
+                accent = gr.ColorPicker(value="#FFD700", label="🎨 Accent → highlight")
             with gr.Row():
-                bg_box = gr.Checkbox(value=False, label="📦 Caption background box")
+                bg_box = gr.Checkbox(value=False, label="📦 Caption box")
                 emoji_chk = gr.Checkbox(value=False, label="😀 Emoji captions")
-        with gr.Group(elem_classes=["glass"]):
-            gr.Markdown("### 🖼️ Format & polish")
+            gr.Markdown("**🖼️ Format**")
             with gr.Row():
                 aspect = gr.Radio(["9:16", "1:1", "16:9"], value="9:16", label="Aspect ratio")
-                sfx = gr.Checkbox(value=True, label="Whoosh SFX")
-                zoom = gr.Checkbox(value=True, label="Punch zooms")
-            logo = gr.Image(label="🎨 Brand logo (optional watermark)", type="filepath")
-        render_btn = gr.Button("🎬 Render selected", variant="primary", size="lg")
-        render_status = gr.Textbox(label="Render status", lines=3, interactive=False)
-        gallery = gr.Gallery(label="Finished clips (click to preview)", columns=3,
-                             object_fit="contain", height="auto")
-        downloads = gr.File(label="Download MP4s", file_count="multiple", interactive=False)
-        titles_md = gr.Markdown(
-            "🎬 *Your rendered clips' titles, descriptions & hashtags will appear here.*")
+                sfx = gr.Checkbox(value=True, label="🔊 Whoosh SFX")
+                zoom = gr.Checkbox(value=True, label="🔍 Punch zooms")
+            logo = gr.Image(label="🎨 Brand logo watermark (optional)", type="filepath")
+            gr.HTML('</div>')
+
+            render_btn = gr.Button("🎬 Render Selected Clips", variant="primary", size="lg")
+            render_status = gr.Textbox(label="Render status", lines=2, interactive=False,
+                                       elem_classes=["oc-status"])
+            gallery = gr.Gallery(label="Finished clips — click to preview", columns=3,
+                                 object_fit="contain", height="auto")
+            downloads = gr.File(label="⬇️ Download MP4s", file_count="multiple", interactive=False)
+            titles_md = gr.Markdown(
+                "🎬 *Titles, descriptions & hashtags for your rendered clips will appear here.*")
+
+            gr.HTML(HOW_HTML)
 
     # ---- reactive wiring --------------------------------------------------
     def _apply_preset(choice):
@@ -664,14 +812,13 @@ with gr.Blocks(title="ClipForge — Long Video → Viral Shorts", css=CSS) as de
         return gr.update(), gr.update()
 
     dur_preset.change(_apply_preset, inputs=dur_preset, outputs=[min_dur, max_dur])
-    # Accent picker directly drives the highlight color picker.
     accent.change(lambda c: c, inputs=accent, outputs=highlight)
 
     analyze_btn.click(
         analyze_video,
         inputs=[video_in, yt_in, top_n, min_dur, max_dur, model,
                 focus_prompt, trim_chk, dub_chk, dub_lang],
-        outputs=[status_out, transcript_out, score_cards, clips_table, pick, job_state],
+        outputs=[status_out, transcript_out, score_cards, pick, job_state],
     )
     render_btn.click(
         render_selected,
@@ -686,4 +833,9 @@ if __name__ == "__main__":
     # 0.0.0.0 + $PORT: required by Docker hosts (HF Spaces, Render, ...).
     # Render injects PORT (default 10000); elsewhere it falls back to 7860.
     port = int(os.environ.get("PORT", "7860"))
-    demo.launch(server_name="0.0.0.0", server_port=port)
+    # Optional HTTP basic auth for self-hosted/tunnel deployments. Set
+    # CLIPFORGE_USER + CLIPFORGE_PASS in the environment (never in the repo).
+    _user = os.environ.get("CLIPFORGE_USER")
+    _pass = os.environ.get("CLIPFORGE_PASS")
+    _auth = (_user, _pass) if _user and _pass else None
+    demo.launch(server_name="0.0.0.0", server_port=port, auth=_auth)
