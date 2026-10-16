@@ -1,12 +1,12 @@
-# ClipForge — pinned, CPU-only, Python 3.10
+# ClipForge — pinned, CPU-only
 # Verified to exist on PyPI. All heavy deps are lazily imported by the
 # backend, so `import app` works with just gradio + numpy installed.
 
-gradio==4.44.1
-# gradio 4.44.1 does `from huggingface_hub import HfFolder`, which was
-# removed in huggingface-hub >= 0.27 — pin to the last version that has it,
-# otherwise a fresh `pip install` pulls hub 1.x and gradio fails to import.
-huggingface-hub==0.26.3
+# Gradio 4.x is BROKEN on Python 3.14 (codespaces default): its
+# safe_get_stop_event() calls asyncio.get_event_loop(), which raises
+# RuntimeError on 3.14 (implicit loop creation removed) -> every SSE/queue
+# request dies with "Connection errored out." Gradio 6.x fixes this.
+gradio>=6.30.0
 faster-whisper==1.1.1
 # faster-whisper 1.1.1 calls av.open(..., metadata_errors="ignore"), an option
 # REMOVED in PyAV >= 12 (it crashes with TypeError). Pin av<12 until
@@ -21,13 +21,13 @@ yt-dlp==2025.10.14
 # gradio 4.38+ requires numpy>=2.0, so the whole stack is pinned on numpy 2.x.
 numpy==2.0.2
 scipy==1.14.1
-# gradio 4.44.1's HTTP server breaks with modern fastapi/starlette/pydantic
-# (fresh pip pulls fastapi 0.14x + starlette 1.x + pydantic 2.14 → 500 errors
-# on / and /config). Verified working set, contemporary with gradio 4.44.1:
-# - starlette>=0.42 changed the Jinja2 templating call signature
-# - pydantic>=2.11 emits boolean JSON-schemas that gradio-client 1.3.0 chokes on
-fastapi==0.115.6
-starlette==0.41.3
+# HTTP stack verified WITH gradio 6.30.0 (E2E-tested 2026-10-15 — this exact
+# set rendered 3 real clips with thumbnails + virality scores): fastapi 0.143.1
+# + starlette 1.8.0 were pulled by the gradio 6 upgrade. Do NOT downgrade:
+# gradio 6 requires starlette>=1.0.1, and fastapi 0.115.x requires
+# starlette<0.42 — the old pins conflict and break fresh installs.
+fastapi==0.143.1
+starlette==1.8.0
 pydantic==2.10.6
 # AI dub (beta): translation + neural TTS voices. Both are lazily imported
 # inside clipforge/dub.py, so they are NOT needed for `import app`.
